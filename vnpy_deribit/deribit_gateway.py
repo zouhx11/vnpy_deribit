@@ -51,7 +51,8 @@ STATUS_DERIBIT2VT: Dict[str, Status] = {
 ORDERTYPE_VT2DERIBIT: Dict[OrderType, str] = {
     OrderType.LIMIT: "limit",
     OrderType.MARKET: "market",
-    OrderType.STOP: "stop_market"
+    OrderType.STOP: "stop_market",
+    OrderType.FOK: "fill_or_kill"
 }
 ORDERTYPE_DERIBIT2VT: Dict[str, OrderType] = {v: k for k, v in ORDERTYPE_VT2DERIBIT.items()}
 
@@ -83,6 +84,8 @@ class DeribitGateway(BaseGateway):
     vn.py用于对接Deribit交易所的交易接口。
     """
 
+    default_name: str = "Deribit"
+
     default_setting = {
         "key": "",
         "secret": "",
@@ -96,7 +99,7 @@ class DeribitGateway(BaseGateway):
     def __init__(self, event_engine: EventEngine, gateway_name: str = "DERIBIT") -> None:
         """构造函数"""
         super().__init__(event_engine, gateway_name)
-
+        self.count: int = 0
         self.ws_api: "DeribitWebsocketApi" = DeribitWebsocketApi(self)
 
     def connect(self, setting: dict) -> None:
@@ -153,7 +156,12 @@ class DeribitGateway(BaseGateway):
 
     def process_timer_event(self, event: Event) -> None:
         """处理定时事件"""
+        self.count += 1
+        if self.count < 5:
+            return
+        self.count = 0
         self.query_account()
+        self.ws_api.query_instrument()
 
 
 class DeribitWebsocketApi(WebsocketClient):
@@ -253,13 +261,23 @@ class DeribitWebsocketApi(WebsocketClient):
         method: str = "private/" + side
 
         # 生成委托请求
-        params: dict = {
-            "instrument_name": req.symbol,
-            "amount": req.volume,
-            "type": ORDERTYPE_VT2DERIBIT[req.type],
-            "label": orderid,
-            "price": req.price
-        }
+        if req.type != OrderType.FOK:
+            params: dict = {
+                "instrument_name": req.symbol,
+                "amount": req.volume,
+                "type": ORDERTYPE_VT2DERIBIT[req.type],
+                "label": orderid,
+                "price": req.price
+            }
+        else:
+            params: dict = {
+                "instrument_name": req.symbol,
+                "amount": req.volume,
+                "type": "limit",
+                "label": orderid,
+                "price": req.price,
+                "time_in_force": ORDERTYPE_VT2DERIBIT[req.type]
+            }
 
         reqid: str = self.send_request(
             method,
